@@ -1,0 +1,9 @@
+# keymap.toml — optional vidi key binding snippets for yazi
+#
+# Merge these entries into ~/.config/yazi/keymap.toml as needed.
+
+[manager]
+prepend_keymap = [
+  # Press 'V' (shift-v) to open the hovered file in vidi full-screen.
+  { on = "V", run = "open --opener vidi", desc = "Open with vidi" },
+]
