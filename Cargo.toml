@@ -1,0 +1,38 @@
+[package]
+name = "vidi"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+description = "Universal terminal file viewer — detects file type and delegates to the best available tool"
+repository = "https://github.com/ChrisGVE/vidi"
+documentation = "https://docs.rs/vidi"
+homepage = "https://github.com/ChrisGVE/vidi"
+keywords = ["terminal", "viewer", "file", "cli", "preview"]
+categories = ["command-line-utilities"]
+readme = "README.md"
+
+[[bin]]
+name = "vidi"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "2"
+infer = "0.19"
+which = "7"
+crossterm = "0.28"
+strip-ansi-escapes = "0.2"
+tempfile = "3"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
