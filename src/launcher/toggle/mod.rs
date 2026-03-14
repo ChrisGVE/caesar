@@ -30,8 +30,7 @@ use render::{display_png, render_pdf_page};
 fn is_latex(file: &Path) -> bool {
     file.extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("tex"))
-        .unwrap_or(false)
+        .is_some_and(|e| e.eq_ignore_ascii_case("tex"))
 }
 
 /// Print a status message to stdout (raw mode is active, use CR+LF).
@@ -43,7 +42,7 @@ fn print_status(msg: &str) {
 /// Build the bat source-view callback for the given file.
 ///
 /// Returns a closure that runs `bat` (or `cat` as fallback) and shows the
-/// file source.  Because bat is exec'd as a child — not exec() replacing
+/// file source.  Because `bat` is exec'd as a child — not `exec()` replacing
 /// the process — it exits back to the event loop.
 fn make_source_viewer<'a>(
     file: &'a Path,

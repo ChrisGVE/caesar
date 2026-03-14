@@ -23,7 +23,6 @@ pub enum View {
 /// Run the interactive keypress loop.
 ///
 /// `show_source` and `show_rendered` are called each time the view changes.
-/// They receive the current terminal `stdout` handle for output.
 ///
 /// Key bindings:
 /// - `s` / `S` → switch to source view
@@ -62,7 +61,7 @@ where
 
     loop {
         let ev = event::read()?;
-        let requested = handle_event(ev);
+        let requested = handle_event(&ev);
 
         match requested {
             EventAction::Quit => break,
@@ -78,8 +77,8 @@ where
                     return Err(e);
                 }
             }
-            EventAction::Show(_) => {} // Same view requested; no-op.
-            EventAction::None => {}
+            // Same view requested, or unrecognised key — no-op.
+            EventAction::Show(_) | EventAction::None => {}
         }
     }
 
@@ -100,14 +99,11 @@ pub enum EventAction {
 ///
 /// This is a pure function with no side effects, making it straightforward
 /// to unit-test the state machine transitions.
-pub fn handle_event(ev: Event) -> EventAction {
+pub fn handle_event(ev: &Event) -> EventAction {
     match ev {
         Event::Key(KeyEvent {
-            code: KeyCode::Char('q') | KeyCode::Char('Q'),
+            code: KeyCode::Char('q' | 'Q') | KeyCode::Esc,
             ..
-        })
-        | Event::Key(KeyEvent {
-            code: KeyCode::Esc, ..
         }) => EventAction::Quit,
 
         Event::Key(KeyEvent {
@@ -117,12 +113,12 @@ pub fn handle_event(ev: Event) -> EventAction {
         }) if modifiers.contains(KeyModifiers::CONTROL) => EventAction::Quit,
 
         Event::Key(KeyEvent {
-            code: KeyCode::Char('s') | KeyCode::Char('S'),
+            code: KeyCode::Char('s' | 'S'),
             ..
         }) => EventAction::Show(View::Source),
 
         Event::Key(KeyEvent {
-            code: KeyCode::Char('r') | KeyCode::Char('R'),
+            code: KeyCode::Char('r' | 'R'),
             ..
         }) => EventAction::Show(View::Rendered),
 
@@ -155,28 +151,28 @@ mod tests {
 
     #[test]
     fn q_key_produces_quit() {
-        assert_eq!(handle_event(key(KeyCode::Char('q'))), EventAction::Quit);
+        assert_eq!(handle_event(&key(KeyCode::Char('q'))), EventAction::Quit);
     }
 
     #[test]
     fn uppercase_q_produces_quit() {
-        assert_eq!(handle_event(key(KeyCode::Char('Q'))), EventAction::Quit);
+        assert_eq!(handle_event(&key(KeyCode::Char('Q'))), EventAction::Quit);
     }
 
     #[test]
     fn escape_produces_quit() {
-        assert_eq!(handle_event(key(KeyCode::Esc)), EventAction::Quit);
+        assert_eq!(handle_event(&key(KeyCode::Esc)), EventAction::Quit);
     }
 
     #[test]
     fn ctrl_c_produces_quit() {
-        assert_eq!(handle_event(ctrl('c')), EventAction::Quit);
+        assert_eq!(handle_event(&ctrl('c')), EventAction::Quit);
     }
 
     #[test]
     fn s_key_shows_source() {
         assert_eq!(
-            handle_event(key(KeyCode::Char('s'))),
+            handle_event(&key(KeyCode::Char('s'))),
             EventAction::Show(View::Source)
         );
     }
@@ -184,7 +180,7 @@ mod tests {
     #[test]
     fn uppercase_s_shows_source() {
         assert_eq!(
-            handle_event(key(KeyCode::Char('S'))),
+            handle_event(&key(KeyCode::Char('S'))),
             EventAction::Show(View::Source)
         );
     }
@@ -192,7 +188,7 @@ mod tests {
     #[test]
     fn r_key_shows_rendered() {
         assert_eq!(
-            handle_event(key(KeyCode::Char('r'))),
+            handle_event(&key(KeyCode::Char('r'))),
             EventAction::Show(View::Rendered)
         );
     }
@@ -200,20 +196,20 @@ mod tests {
     #[test]
     fn uppercase_r_shows_rendered() {
         assert_eq!(
-            handle_event(key(KeyCode::Char('R'))),
+            handle_event(&key(KeyCode::Char('R'))),
             EventAction::Show(View::Rendered)
         );
     }
 
     #[test]
     fn unknown_key_produces_none() {
-        assert_eq!(handle_event(key(KeyCode::Char('x'))), EventAction::None);
+        assert_eq!(handle_event(&key(KeyCode::Char('x'))), EventAction::None);
     }
 
     #[test]
     fn transition_source_to_rendered() {
         let mut state = View::Source;
-        let action = handle_event(key(KeyCode::Char('r')));
+        let action = handle_event(&key(KeyCode::Char('r')));
         if let EventAction::Show(next) = action {
             if next != state {
                 state = next;
@@ -225,7 +221,7 @@ mod tests {
     #[test]
     fn transition_rendered_to_source() {
         let mut state = View::Rendered;
-        let action = handle_event(key(KeyCode::Char('s')));
+        let action = handle_event(&key(KeyCode::Char('s')));
         if let EventAction::Show(next) = action {
             if next != state {
                 state = next;
@@ -237,7 +233,7 @@ mod tests {
     #[test]
     fn same_view_request_no_transition() {
         let state = View::Source;
-        let action = handle_event(key(KeyCode::Char('s')));
+        let action = handle_event(&key(KeyCode::Char('s')));
         if let EventAction::Show(next) = action {
             // next == state, so no transition needed
             assert_eq!(next, state);
