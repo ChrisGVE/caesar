@@ -130,11 +130,9 @@ extra_search_paths = ["/opt/homebrew/bin"]
 
 vidi can serve as both a **previewer** and a **full-screen opener** inside [yazi](https://github.com/sxyazi/yazi).
 
-Configuration files will be provided in `contrib/yazi/` in a future release. In the meantime:
+Configuration files are in `contrib/yazi/`. See [`contrib/yazi/vidi.yazi/README.md`](contrib/yazi/vidi.yazi/README.md) for full setup instructions.
 
-- **Previewer**: call `vidi --inline --lines $YAZI_PREVIEW_HEIGHT "$1"` from a yazi `prepend_previewers` rule.
-- **Opener**: call `vidi "$1"` with `block = true` in a yazi `open` rule.
-- Set `VIDI_THEME` to match yazi's active theme so colors are consistent.
+Yazi already handles images, plain text, source code, PDF thumbnails, and video thumbnails natively. vidi adds previews for formats yazi does not cover: ebooks, office documents, spreadsheets, CSV, audio metadata, LaTeX/Typst sources, and archives.
 
 ## LaTeX and Typst
 
@@ -154,12 +152,74 @@ No tool is strictly required. vidi degrades gracefully:
 - **Text and source code**: `cat` is the universal fallback (POSIX standard).
 - **Binary files**: `xxd` is the universal fallback (ships with vim).
 
-For richer output, install any combination of the tools listed in the supported formats table. Homebrew users on macOS can install the full set with:
+For richer output, install any combination of the tools below.
+
+### macOS (Homebrew)
 
 ```sh
-brew install bat glow chafa viu timg ffmpeg mpv zathura mupdf-tools \
-     poppler pandoc visidata csvlens miller jless jq yq taplo ouch hexyl
+brew install bat glow mdcat highlight chafa viu timg ffmpeg mpv \
+             mupdf-tools poppler pandoc doxx \
+             visidata sc-im csvlens tidy-viewer miller \
+             jless jq yq taplo ouch hexyl \
+             tectonic typst
 ```
+
+`epy` is not in Homebrew; install it with `pip install epy-reader`.
+
+`zathura` is not packaged for macOS via Homebrew; `mutool` (from `mupdf-tools`) is used as the PDF fallback instead.
+
+### Linux (apt + Homebrew)
+
+Packages available in standard apt repositories:
+
+```sh
+apt install bat chafa timg ffmpeg mpv zathura mupdf-tools poppler-utils \
+            pandoc visidata sc-im miller jq hexyl highlight
+```
+
+For tools not in standard apt repositories, use [Homebrew on Linux](https://brew.sh):
+
+```sh
+brew install glow mdcat viu doxx csvlens tidy-viewer jless yq taplo ouch tectonic typst
+```
+
+`epy` is not in any package manager; install it with `pip install epy-reader`.
+
+On older Ubuntu/Debian, `bat` is installed as `batcat`. Create an alias:
+`mkdir -p ~/.local/bin && ln -sf "$(which batcat)" ~/.local/bin/bat`
+
+### Per-tool reference
+
+| Tool | Binary | macOS | Linux | Notes |
+|---|---|---|---|---|
+| bat | `bat` | `brew install bat` | `apt install bat` | Text/code viewer with syntax highlighting |
+| highlight | `highlight` | `brew install highlight` | `apt install highlight` | Fallback syntax highlighter |
+| glow | `glow` | `brew install glow` | `brew install glow` | Markdown renderer |
+| mdcat | `mdcat` | `brew install mdcat` | `brew install mdcat` | Markdown fallback |
+| chafa | `chafa` | `brew install chafa` | `apt install chafa` | Image renderer (all terminals) |
+| viu | `viu` | `brew install viu` | `brew install viu` | Image viewer (Kitty/iTerm2) |
+| timg | `timg` | `brew install timg` | `apt install timg` | Image and video thumbnails |
+| ffmpeg | `ffprobe` | `brew install ffmpeg` | `apt install ffmpeg` | Audio metadata; includes `ffprobe` |
+| mpv | `mpv` | `brew install mpv` | `apt install mpv` | Video and audio playback |
+| zathura | `zathura` | — | `apt install zathura` | PDF viewer; macOS: not available |
+| mupdf-tools | `mutool` | `brew install mupdf-tools` | `apt install mupdf-tools` | PDF rendering fallback |
+| poppler | `pdftotext` | `brew install poppler` | `apt install poppler-utils` | PDF text extraction fallback |
+| epy | `epy` | `pip install epy-reader` | `pip install epy-reader` | Ebook reader (epub/mobi) |
+| pandoc | `pandoc` | `brew install pandoc` | `apt install pandoc` | Ebook and office doc fallback |
+| doxx | `doxx` | `brew install doxx` | `brew install doxx` | Office document viewer |
+| visidata | `vd` | `brew install visidata` | `apt install visidata` | Spreadsheet viewer |
+| sc-im | `sc-im` | `brew install sc-im` | `apt install sc-im` | Spreadsheet fallback |
+| csvlens | `csvlens` | `brew install csvlens` | `brew install csvlens` | CSV viewer |
+| tidy-viewer | `tv` | `brew install tidy-viewer` | `brew install tidy-viewer` | CSV fallback |
+| miller | `mlr` | `brew install miller` | `apt install miller` | CSV/tabular data fallback |
+| jless | `jless` | `brew install jless` | `brew install jless` | JSON viewer |
+| jq | `jq` | `brew install jq` | `apt install jq` | JSON fallback |
+| yq | `yq` | `brew install yq` | `brew install yq` | YAML viewer |
+| taplo | `taplo` | `brew install taplo` | `brew install taplo` | TOML formatter/viewer |
+| ouch | `ouch` | `brew install ouch` | `brew install ouch` | Archive listing |
+| hexyl | `hexyl` | `brew install hexyl` | `apt install hexyl` | Hex viewer |
+| tectonic | `tectonic` | `brew install tectonic` | `brew install tectonic` | LaTeX compilation |
+| typst | `typst` | `brew install typst` | `brew install typst` | Typst compilation |
 
 ## License
 
