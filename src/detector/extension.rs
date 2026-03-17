@@ -58,6 +58,9 @@ fn extension_map(ext: &str) -> Option<FileKind> {
         | "rar" | "lz4" | "lzma" | "lz" | "brotli" | "br" | "iso" | "deb" | "rpm" | "apk"
         | "jar" | "war" | "ear" | "whl" => Some(FileKind::Archive),
 
+        // HTML documents
+        "html" | "htm" | "xhtml" => Some(FileKind::Html),
+
         // Text (source code and plain text — catch-all for known text extensions)
         "rs" | "py" | "js" | "jsx" | "tsx" | "go" | "c" | "h" | "cpp" | "hpp" | "cc" | "cxx"
         | "cs" | "java" | "kt" | "swift" | "rb" | "php" | "sh" | "bash" | "zsh" | "fish"
@@ -68,9 +71,10 @@ fn extension_map(ext: &str) -> Option<FileKind> {
         | "log" | "conf" | "cfg" | "ini" | "env" | "gitignore" | "gitattributes"
         | "editorconfig" | "makefile" | "dockerfile" | "vagrantfile" | "gemfile" | "rakefile"
         | "podfile" | "diff" | "patch" | "sql" | "graphql" | "gql" | "proto" | "thrift" | "tf"
-        | "hcl" | "nix" | "cmake" | "xml" | "html" | "htm" | "xhtml" | "css" | "scss" | "sass"
-        | "less" | "styl" | "vue" | "svelte" | "rst" | "adoc" | "asciidoc" | "org" | "wiki"
-        | "textile" => Some(FileKind::Text),
+        | "hcl" | "nix" | "cmake" | "xml" | "css" | "scss" | "sass" | "less" | "styl" | "vue"
+        | "svelte" | "rst" | "adoc" | "asciidoc" | "org" | "wiki" | "textile" => {
+            Some(FileKind::Text)
+        }
 
         _ => None,
     }
@@ -176,6 +180,18 @@ mod tests {
         assert_eq!(detect("src.tar.gz"), Some(FileKind::Archive));
         assert_eq!(detect("backup.zip"), Some(FileKind::Archive));
         assert_eq!(detect("pkg.deb"), Some(FileKind::Archive));
+    }
+
+    #[test]
+    fn detects_html() {
+        assert_eq!(detect("page.html"), Some(FileKind::Html));
+        assert_eq!(detect("page.htm"), Some(FileKind::Html));
+        assert_eq!(detect("page.xhtml"), Some(FileKind::Html));
+    }
+
+    #[test]
+    fn html_is_not_text() {
+        assert_ne!(detect("index.html"), Some(FileKind::Text));
     }
 
     #[test]

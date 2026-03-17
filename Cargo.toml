@@ -27,6 +27,8 @@ which = "7"
 crossterm = "0.28"
 strip-ansi-escapes = "0.2"
 tempfile = "3"
+rbook = "0.7"
+scraper = "0.22"
 
 [dev-dependencies]
 assert_cmd = "2"

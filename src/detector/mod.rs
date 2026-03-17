@@ -26,6 +26,8 @@ pub enum FileKind {
     Pdf,
     /// Ebook formats (`.epub`, `.mobi`, `.djvu`, …).
     Ebook,
+    /// HTML documents (`.html`, `.htm`, `.xhtml`).
+    Html,
     /// Office documents (`.docx`, `.odt`, `.pptx`, `.pages`, …).
     OfficeDocs,
     /// Spreadsheet files (`.xlsx`, `.ods`, `.numbers`, …).
@@ -58,6 +60,7 @@ impl std::fmt::Display for FileKind {
             FileKind::Audio => "audio",
             FileKind::Pdf => "PDF",
             FileKind::Ebook => "ebook",
+            FileKind::Html => "HTML",
             FileKind::OfficeDocs => "office document",
             FileKind::Spreadsheet => "spreadsheet",
             FileKind::Csv => "CSV",
@@ -70,6 +73,32 @@ impl std::fmt::Display for FileKind {
             FileKind::Binary => "binary",
         };
         write!(f, "{name}")
+    }
+}
+
+impl FileKind {
+    /// Return the lowercase config key used in the `[viewer]` table.
+    pub fn config_key(self) -> &'static str {
+        match self {
+            FileKind::Text => "text",
+            FileKind::Markdown => "markdown",
+            FileKind::Image => "image",
+            FileKind::Video => "video",
+            FileKind::Audio => "audio",
+            FileKind::Pdf => "pdf",
+            FileKind::Ebook => "ebook",
+            FileKind::Html => "html",
+            FileKind::OfficeDocs => "office",
+            FileKind::Spreadsheet => "spreadsheet",
+            FileKind::Csv => "csv",
+            FileKind::LaTeX => "latex",
+            FileKind::Typst => "typst",
+            FileKind::Json => "json",
+            FileKind::Yaml => "yaml",
+            FileKind::Toml => "toml",
+            FileKind::Archive => "archive",
+            FileKind::Binary => "binary",
+        }
     }
 }
 
@@ -105,6 +134,7 @@ mod tests {
             FileKind::Audio,
             FileKind::Pdf,
             FileKind::Ebook,
+            FileKind::Html,
             FileKind::OfficeDocs,
             FileKind::Spreadsheet,
             FileKind::Csv,
@@ -119,5 +149,46 @@ mod tests {
         for v in &variants {
             assert!(!v.to_string().is_empty());
         }
+    }
+
+    #[test]
+    fn html_display_is_uppercase() {
+        assert_eq!(FileKind::Html.to_string(), "HTML");
+    }
+
+    #[test]
+    fn config_keys_are_unique_and_non_empty() {
+        use std::collections::HashSet;
+        let variants = [
+            FileKind::Text,
+            FileKind::Markdown,
+            FileKind::Image,
+            FileKind::Video,
+            FileKind::Audio,
+            FileKind::Pdf,
+            FileKind::Ebook,
+            FileKind::Html,
+            FileKind::OfficeDocs,
+            FileKind::Spreadsheet,
+            FileKind::Csv,
+            FileKind::LaTeX,
+            FileKind::Typst,
+            FileKind::Json,
+            FileKind::Yaml,
+            FileKind::Toml,
+            FileKind::Archive,
+            FileKind::Binary,
+        ];
+        let mut seen = HashSet::new();
+        for v in variants {
+            let key = v.config_key();
+            assert!(!key.is_empty(), "empty config_key for {v}");
+            assert!(seen.insert(key), "duplicate config_key '{key}' for {v}");
+        }
+    }
+
+    #[test]
+    fn html_config_key() {
+        assert_eq!(FileKind::Html.config_key(), "html");
     }
 }
