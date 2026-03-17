@@ -1,11 +1,13 @@
 mod probe;
 mod tools;
 mod tools_data;
+mod viewer_choice;
 
 pub use probe::is_available;
 pub use probe::resolve_tool;
 pub use tools::{ToolSpec, REGISTRY};
 pub use tools_data::TEXT_TOOLS;
+pub use viewer_choice::{resolve_viewer_choice, ViewerChoice};
 
 use crate::detector::FileKind;
 
