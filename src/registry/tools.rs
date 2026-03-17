@@ -1,9 +1,9 @@
 use crate::detector::FileKind;
 
 use super::tools_data::{
-    ARCHIVE_TOOLS, AUDIO_TOOLS, BINARY_TOOLS, CSV_TOOLS, EBOOK_TOOLS, IMAGE_TOOLS, JSON_TOOLS,
-    LATEX_TOOLS, MARKDOWN_TOOLS, OFFICE_TOOLS, PDF_TOOLS, SPREADSHEET_TOOLS, TEXT_TOOLS,
-    TOML_TOOLS, TYPST_TOOLS, VIDEO_TOOLS, YAML_TOOLS,
+    ARCHIVE_TOOLS, AUDIO_TOOLS, BINARY_TOOLS, CSV_TOOLS, EBOOK_TOOLS, HTML_TOOLS, IMAGE_TOOLS,
+    JSON_TOOLS, LATEX_TOOLS, MARKDOWN_TOOLS, OFFICE_TOOLS, PDF_TOOLS, SPREADSHEET_TOOLS,
+    TEXT_TOOLS, TOML_TOOLS, TYPST_TOOLS, VIDEO_TOOLS, YAML_TOOLS,
 };
 
 /// Specification for a single delegated viewer tool.
@@ -36,6 +36,7 @@ pub static REGISTRY: &[(FileKind, &[ToolSpec])] = &[
     (FileKind::Audio, AUDIO_TOOLS),
     (FileKind::Pdf, PDF_TOOLS),
     (FileKind::Ebook, EBOOK_TOOLS),
+    (FileKind::Html, HTML_TOOLS),
     (FileKind::OfficeDocs, OFFICE_TOOLS),
     (FileKind::Spreadsheet, SPREADSHEET_TOOLS),
     (FileKind::Csv, CSV_TOOLS),

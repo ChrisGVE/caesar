@@ -199,6 +199,52 @@ pub static EBOOK_TOOLS: &[ToolSpec] = &[
     },
 ];
 
+pub static HTML_TOOLS: &[ToolSpec] = &[
+    ToolSpec {
+        name: "w3m",
+        binary: "w3m",
+        fullscreen_args: &["-dump", "-T", "text/html"],
+        inline_args: &["-dump", "-T", "text/html"],
+        supports_inline: true,
+        supports_fullscreen: true,
+        supports_theming: false,
+    },
+    ToolSpec {
+        name: "lynx",
+        binary: "lynx",
+        fullscreen_args: &["-dump", "-nolist"],
+        inline_args: &["-dump", "-nolist"],
+        supports_inline: true,
+        supports_fullscreen: true,
+        supports_theming: false,
+    },
+    ToolSpec {
+        name: "bat",
+        binary: "bat",
+        fullscreen_args: &["--paging=always", "--language=html", "--theme={theme}"],
+        inline_args: &[
+            "--paging=never",
+            "--plain",
+            "--language=html",
+            "--terminal-width={cols}",
+            "--line-range=:{lines}",
+            "--theme={theme}",
+        ],
+        supports_inline: true,
+        supports_fullscreen: true,
+        supports_theming: true,
+    },
+    ToolSpec {
+        name: "cat",
+        binary: "cat",
+        fullscreen_args: &[],
+        inline_args: &[],
+        supports_inline: true,
+        supports_fullscreen: true,
+        supports_theming: false,
+    },
+];
+
 pub static OFFICE_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "doxx",

@@ -34,6 +34,7 @@ mod tests {
             FileKind::Audio,
             FileKind::Pdf,
             FileKind::Ebook,
+            FileKind::Html,
             FileKind::OfficeDocs,
             FileKind::Spreadsheet,
             FileKind::Csv,
