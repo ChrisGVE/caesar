@@ -40,7 +40,6 @@ pub fn resolve_viewer_choice(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn config_with_viewer(key: &str, value: &str) -> Config {
         let mut cfg = Config::default();

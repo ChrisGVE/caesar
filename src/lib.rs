@@ -19,6 +19,7 @@
 //! | [`theme`] | Theme definitions, resolution, and per-tool mapping |
 //! | [`config`] | Config file loading (`~/.config/vidi/config.toml`) |
 //! | [`launcher`] | Full-screen, inline, toggle, and media launchers |
+//! | [`renderer`] | Internal ANSI renderers (HTML, EPUB) |
 //! | [`error`] | Unified error type |
 
 pub mod config;
@@ -26,5 +27,6 @@ pub mod detector;
 pub mod error;
 pub mod launcher;
 pub mod registry;
+pub mod renderer;
 pub mod terminal;
 pub mod theme;

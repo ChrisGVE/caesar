@@ -93,6 +93,7 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    #[allow(dead_code)]
     fn available(_: &'static str) -> bool {
         true
     }
