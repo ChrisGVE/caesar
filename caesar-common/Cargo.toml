@@ -1,0 +1,16 @@
+[package]
+name = "caesar-common"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+description = "Shared infrastructure for the Caesar tool trilogy (veni, vidi, vici)"
+repository = "https://github.com/ChrisGVE/caesar"
+
+[dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+infer = "0.19"
+which = "7"
+crossterm = "0.28"
