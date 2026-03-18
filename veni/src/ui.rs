@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 /// Main draw routine.  Splits the terminal into three rows:
-///   1. Directory listing area (fills remaining space, split 50/50 into two panes)
+///   1. Directory listing area (fills remaining space, split equally across visible panes)
 ///   2. Status bar / command line (1 line)
 pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -22,23 +22,44 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 // ---------------------------------------------------------------------------
-// Two-pane layout
+// Multi-pane layout
 // ---------------------------------------------------------------------------
 
 fn draw_panes(f: &mut Frame, app: &mut App, area: Rect) {
+    // Calculate how many panes fit in the terminal width.
+    // Each pane gets at least MIN_PANE_WIDTH columns.
+    const MIN_PANE_WIDTH: u16 = 20;
+    let total_panes = app.panes.len();
+    let max_visible = if area.width >= MIN_PANE_WIDTH {
+        (area.width / MIN_PANE_WIDTH) as usize
+    } else {
+        1
+    };
+    let visible_count = max_visible.min(total_panes.saturating_sub(app.viewport_start));
+    let visible_count = visible_count.max(1);
+
+    // Build equal-width constraints for each visible pane.
+    let constraints: Vec<Constraint> = (0..visible_count)
+        .map(|_| Constraint::Ratio(1, visible_count as u32))
+        .collect();
+
     let pane_areas = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints(constraints)
         .split(area);
 
-    // Render both panes, passing information about which is active.
-    render_pane(f, app, 0, pane_areas[0]);
-    render_pane(f, app, 1, pane_areas[1]);
+    for (slot, area) in pane_areas.iter().enumerate() {
+        let pane_idx = app.viewport_start + slot;
+        if pane_idx < app.panes.len() {
+            render_pane(f, app, pane_idx, *area);
+        }
+    }
 }
 
 /// Render a single pane at `pane_idx` into the given `area`.
 fn render_pane(f: &mut Frame, app: &mut App, pane_idx: usize, area: Rect) {
     let is_active = pane_idx == app.active_pane;
+    let is_renaming = is_active && app.mode == Mode::Insert;
 
     // Build block with path title.
     let title = truncate_path(
@@ -87,11 +108,23 @@ fn render_pane(f: &mut Frame, app: &mut App, pane_idx: usize, area: Rect) {
     };
     let search_matches: &[usize] = if is_active { &app.search_matches } else { &[] };
 
+    // When renaming, snapshot the rename buffer to use in formatting.
+    let rename_buffer = if is_renaming {
+        Some(app.rename_buffer.clone())
+    } else {
+        None
+    };
+
     let items: Vec<ListItem> = entries
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            let line = format_entry(e);
+            let line = if is_renaming && i == selected {
+                // Show rename buffer for the currently selected entry.
+                format_rename_entry(e, rename_buffer.as_deref().unwrap_or(""))
+            } else {
+                format_entry(e)
+            };
             let in_visual = visual_range
                 .as_ref()
                 .map(|r| r.contains(&i))
@@ -139,11 +172,64 @@ fn truncate_path(path: &str, max_width: usize) -> String {
 // Directory listing helpers
 // ---------------------------------------------------------------------------
 
+/// Return a nerd-font icon for a directory entry.
+/// Extension is checked first; file kind is the fallback for files.
+fn icon_for_entry(entry: &DirEntry) -> &'static str {
+    if entry.is_dir {
+        return "\u{f07b}"; //
+    }
+    let ext = entry.name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    match ext.to_lowercase().as_str() {
+        // Rust
+        "rs" => "\u{e7a8}", //
+        // Python
+        "py" => "\u{e606}", //
+        // JavaScript / TypeScript
+        "js" | "mjs" | "cjs" => "\u{e74e}", //
+        "ts" | "mts" | "cts" => "\u{e628}", //
+        // Web
+        "html" | "htm" => "\u{e736}",          //
+        "css" | "scss" | "sass" => "\u{e749}", //
+        // Config / data
+        "json" => "\u{e60b}",                  //
+        "toml" | "yaml" | "yml" => "\u{e615}", //
+        "xml" => "\u{e619}",                   //
+        // Text / docs
+        "md" | "markdown" => "\u{e73e}", //
+        "txt" => "\u{f15c}",             //
+        "pdf" => "\u{f1c1}",             //
+        // Images
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "webp" => "\u{f1c5}", //
+        // Audio / video
+        "mp3" | "flac" | "ogg" | "wav" => "\u{f1c7}", //
+        "mp4" | "mkv" | "avi" | "mov" | "webm" => "\u{f1c8}", //
+        // Archives
+        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" => "\u{f1c6}", //
+        // Shell / scripts
+        "sh" | "bash" | "zsh" | "fish" => "\u{f489}", //
+        // Go
+        "go" => "\u{e626}", //
+        // C / C++
+        "c" | "h" => "\u{e61e}",                    //
+        "cpp" | "cc" | "cxx" | "hpp" => "\u{e61d}", //
+        // Java / Kotlin
+        "java" => "\u{e738}",       //
+        "kt" | "kts" => "\u{e634}", //
+        // Lua
+        "lua" => "\u{e620}", //
+        // Binary / executable
+        "exe" | "bin" | "out" => "\u{f489}", //
+        // Fallback
+        _ => "\u{f15b}", //
+    }
+}
+
 fn format_entry(entry: &DirEntry) -> Line<'static> {
+    let icon = icon_for_entry(entry);
     let name = if entry.is_dir {
-        format!("{}/", entry.name)
+        format!("{} {}/", icon, entry.name)
     } else {
-        entry.name.clone()
+        format!("{} {}", icon, entry.name)
     };
 
     let size_str = if entry.is_dir {
@@ -164,10 +250,23 @@ fn format_entry(entry: &DirEntry) -> Line<'static> {
         Line::from(Span::styled(name, style))
     } else {
         Line::from(vec![
-            Span::styled(format!("{:<35}", name), style),
+            Span::styled(format!("{:<37}", name), style),
             Span::raw(size_str),
         ])
     }
+}
+
+/// Format an entry while it is being renamed: replace the name with the
+/// current rename buffer and show a cursor indicator.
+fn format_rename_entry(entry: &DirEntry, buffer: &str) -> Line<'static> {
+    let icon = icon_for_entry(entry);
+    let display = format!("{} {}|", icon, buffer);
+    Line::from(Span::styled(
+        display,
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    ))
 }
 
 fn format_size(bytes: u64) -> String {
@@ -206,6 +305,16 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             let para = Paragraph::new(prompt).style(
                 Style::default()
                     .fg(Color::White)
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            );
+            f.render_widget(para, area);
+        }
+        Mode::Insert => {
+            let prompt = format!("rename: {}|", app.rename_buffer);
+            let para = Paragraph::new(prompt).style(
+                Style::default()
+                    .fg(Color::Yellow)
                     .bg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD),
             );
@@ -335,5 +444,94 @@ mod tests {
         let path = "/very/long/path/that/exceeds/the/available/width/by/a/lot";
         let result = truncate_path(path, 20);
         assert!(result.starts_with("..."));
+    }
+
+    // ------------------------------------------------------------------
+    // icon_for_entry tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn icon_for_dir() {
+        let entry = DirEntry {
+            name: "mydir".to_string(),
+            path: "/tmp/mydir".into(),
+            is_dir: true,
+            size: 0,
+            modified: None,
+        };
+        let icon = icon_for_entry(&entry);
+        assert_eq!(icon, "\u{f07b}");
+    }
+
+    #[test]
+    fn icon_for_rust_file() {
+        let entry = DirEntry {
+            name: "main.rs".to_string(),
+            path: "/tmp/main.rs".into(),
+            is_dir: false,
+            size: 0,
+            modified: None,
+        };
+        let icon = icon_for_entry(&entry);
+        assert_eq!(icon, "\u{e7a8}");
+    }
+
+    #[test]
+    fn icon_for_unknown_extension() {
+        let entry = DirEntry {
+            name: "weird.xyz".to_string(),
+            path: "/tmp/weird.xyz".into(),
+            is_dir: false,
+            size: 0,
+            modified: None,
+        };
+        let icon = icon_for_entry(&entry);
+        assert_eq!(icon, "\u{f15b}"); // generic file
+    }
+
+    #[test]
+    fn icon_for_no_extension() {
+        let entry = DirEntry {
+            name: "Makefile".to_string(),
+            path: "/tmp/Makefile".into(),
+            is_dir: false,
+            size: 0,
+            modified: None,
+        };
+        let icon = icon_for_entry(&entry);
+        assert_eq!(icon, "\u{f15b}"); // generic file
+    }
+
+    #[test]
+    fn format_entry_includes_icon() {
+        let entry = DirEntry {
+            name: "main.rs".to_string(),
+            path: "/src/main.rs".into(),
+            is_dir: false,
+            size: 0,
+            modified: None,
+        };
+        let line = format_entry(&entry);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        // The icon character must appear in the formatted text.
+        assert!(
+            text.contains('\u{e7a8}'),
+            "Rust icon must be in formatted entry"
+        );
+    }
+
+    #[test]
+    fn format_rename_entry_shows_buffer_and_cursor() {
+        let entry = DirEntry {
+            name: "old.txt".to_string(),
+            path: "/tmp/old.txt".into(),
+            is_dir: false,
+            size: 0,
+            modified: None,
+        };
+        let line = format_rename_entry(&entry, "new_name");
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("new_name"), "rename buffer must appear");
+        assert!(text.contains('|'), "cursor indicator must appear");
     }
 }

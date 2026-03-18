@@ -20,11 +20,16 @@ pub enum KeyAction {
     SearchNext,
     SearchPrev,
     ToggleHidden,
+    DotRepeat,
+    /// Shift-H: scroll viewport left (show previous pane).
+    ScrollLeft,
+    /// Shift-L: scroll viewport right (show next pane).
+    ScrollRight,
 }
 
 /// Resolves a raw key character (and a pending first character) into a
-/// [`KeyAction`].  Multi-key sequences (`gg`, `dd`, `yy`, `ciw`, `cw`) are
-/// handled by accumulating the first character in `pending`.
+/// [`KeyAction`].  Multi-key sequences (`gg`, `dd`, `yy`, `ciw`, `cw`, `gh`)
+/// are handled by accumulating the first character in `pending`.
 ///
 /// Returns `None` when a first key has been stored as pending (waiting for a
 /// second key) or when the key has no known binding.
@@ -37,6 +42,7 @@ pub fn resolve(ch: char, pending: &mut Option<char>) -> Option<KeyAction> {
             *pending = None;
             match (first, ch) {
                 ('g', 'g') => Some(KeyAction::GoTop),
+                ('g', 'h') => Some(KeyAction::ToggleHidden),
                 ('d', 'd') => Some(KeyAction::Delete),
                 ('y', 'y') => Some(KeyAction::Yank),
                 // `ciw` and `cw` both map to rename in a file manager context.
@@ -70,6 +76,9 @@ pub fn resolve(ch: char, pending: &mut Option<char>) -> Option<KeyAction> {
             '/' => Some(KeyAction::SearchForward),
             'n' => Some(KeyAction::SearchNext),
             'N' => Some(KeyAction::SearchPrev),
+            '.' => Some(KeyAction::DotRepeat),
+            'H' => Some(KeyAction::ScrollLeft),
+            'L' => Some(KeyAction::ScrollRight),
             // First key of a potential two-key sequence.
             'g' | 'd' | 'y' | 'c' => {
                 *pending = Some(ch);
@@ -178,11 +187,38 @@ mod tests {
     }
 
     #[test]
+    fn single_key_dot_repeat() {
+        let mut p = None;
+        assert_eq!(res('.', &mut p), Some(KeyAction::DotRepeat));
+    }
+
+    #[test]
+    fn single_key_scroll_left() {
+        let mut p = None;
+        assert_eq!(res('H', &mut p), Some(KeyAction::ScrollLeft));
+    }
+
+    #[test]
+    fn single_key_scroll_right() {
+        let mut p = None;
+        assert_eq!(res('L', &mut p), Some(KeyAction::ScrollRight));
+    }
+
+    #[test]
     fn gg_goes_top() {
         let mut p = None;
         assert_eq!(res('g', &mut p), None);
         assert_eq!(p, Some('g'));
         assert_eq!(res('g', &mut p), Some(KeyAction::GoTop));
+        assert_eq!(p, None);
+    }
+
+    #[test]
+    fn gh_toggles_hidden() {
+        let mut p = None;
+        assert_eq!(res('g', &mut p), None);
+        assert_eq!(p, Some('g'));
+        assert_eq!(res('h', &mut p), Some(KeyAction::ToggleHidden));
         assert_eq!(p, None);
     }
 
@@ -222,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn g_then_non_g_cancels_and_processes_new_key() {
+    fn g_then_non_g_non_h_cancels_and_processes_new_key() {
         let mut p = None;
         // First 'g' sets pending.
         assert_eq!(res('g', &mut p), None);

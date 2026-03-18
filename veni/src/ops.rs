@@ -21,6 +21,13 @@ pub enum FileOp {
         /// Recorded trash paths so delete can be undone.
         trash_paths: Vec<PathBuf>,
     },
+    /// Rename a single file or directory in place.
+    Rename {
+        /// Original path before rename.
+        from: PathBuf,
+        /// New path after rename.
+        to: PathBuf,
+    },
 }
 
 /// Base directory used as the trash store.
@@ -41,6 +48,7 @@ pub fn execute_op(op: &FileOp) -> Result<()> {
             trash,
             trash_paths: _,
         } => delete_files(paths, *trash),
+        FileOp::Rename { from, to } => std::fs::rename(from, to).map_err(VeniError::Io),
     }
 }
 
@@ -100,6 +108,11 @@ pub fn inverse_op(op: &FileOp) -> FileOp {
                     .unwrap_or_else(|| PathBuf::from(".")),
             }
         }
+        // Inverse of Rename is just swapping from/to.
+        FileOp::Rename { from, to } => FileOp::Rename {
+            from: to.clone(),
+            to: from.clone(),
+        },
     }
 }
 
@@ -352,5 +365,48 @@ mod tests {
 
         assert!(src.exists());
         assert_eq!(fs::read(&src).unwrap(), b"come back");
+    }
+
+    // ------------------------------------------------------------------
+    // Rename
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn rename_file() {
+        let dir = TempDir::new().unwrap();
+        let from = dir.path().join("old.txt");
+        let to = dir.path().join("new.txt");
+        fs::write(&from, b"data").unwrap();
+
+        let op = FileOp::Rename {
+            from: from.clone(),
+            to: to.clone(),
+        };
+        execute_op(&op).unwrap();
+
+        assert!(!from.exists(), "old path must be gone after rename");
+        assert!(to.exists(), "new path must exist after rename");
+        assert_eq!(fs::read(&to).unwrap(), b"data");
+    }
+
+    #[test]
+    fn inverse_of_rename_renames_back() {
+        let dir = TempDir::new().unwrap();
+        let from = dir.path().join("original.txt");
+        let to = dir.path().join("renamed.txt");
+        fs::write(&from, b"hello").unwrap();
+
+        let op = FileOp::Rename {
+            from: from.clone(),
+            to: to.clone(),
+        };
+        execute_op(&op).unwrap();
+        assert!(to.exists());
+
+        let inv = inverse_op(&op);
+        execute_op(&inv).unwrap();
+
+        assert!(from.exists(), "original path must be restored after undo");
+        assert!(!to.exists(), "renamed path must be gone after undo");
     }
 }
