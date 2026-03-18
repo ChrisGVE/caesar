@@ -2,6 +2,8 @@ pub mod app;
 pub mod config;
 pub mod error;
 pub mod input;
+pub mod ops;
+pub mod pane;
 pub mod ui;
 
 pub use error::{Result, VeniError};

@@ -1,11 +1,16 @@
 use crate::config::VeniConfig;
-use crate::error::{Result, VeniError};
+use crate::error::Result;
 use crate::input::{resolve, KeyAction};
+use crate::ops::{execute_op, inverse_op, FileOp};
+use crate::pane::Pane;
 use caesar_common::terminal::TerminalCaps;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::SystemTime;
+
+/// Maximum number of operations kept in the undo stack.
+const UNDO_STACK_LIMIT: usize = 50;
 
 /// Input mode for the modal editing model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +45,13 @@ impl std::fmt::Display for Mode {
     }
 }
 
+/// Whether a yank is Copy or Cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardOp {
+    Copy,
+    Cut,
+}
+
 /// A single entry in the directory listing.
 #[derive(Debug, Clone)]
 pub struct DirEntry {
@@ -53,40 +65,48 @@ pub struct DirEntry {
 /// Core application state.
 pub struct App {
     pub mode: Mode,
-    pub cwd: PathBuf,
     pub caps: TerminalCaps,
     pub config: VeniConfig,
     pub should_quit: bool,
-    pub entries: Vec<DirEntry>,
-    pub selected: usize,
-    pub scroll_offset: usize,
-    /// Pending first key for multi-key sequences (e.g. `gg`, `dd`).
+    /// The two side-by-side panes (index 0 = left, index 1 = right).
+    pub panes: [Pane; 2],
+    /// Which pane has keyboard focus (0 or 1).
+    pub active_pane: usize,
+    /// Pending first key for multi-key sequences (e.g. `gg`, `dd`, `yy`).
     pub pending_key: Option<char>,
-    /// Index where Visual mode selection started.
+    /// Index where Visual mode selection started (in the active pane).
     pub visual_anchor: Option<usize>,
-    /// Explicitly toggled entries (V-mode line selections).
+    /// Explicitly toggled entries (V-mode line selections) in the active pane.
     pub selection: HashSet<usize>,
     /// Buffer for Command mode input (`:` commands).
     pub command_input: String,
     /// Buffer for Search mode input (`/` search).
     pub search_query: String,
-    /// Indices into `entries` that match the current search query.
+    /// Indices into the active pane's entries that match the current search.
     pub search_matches: Vec<usize>,
     /// Position within `search_matches` currently highlighted.
     pub search_match_idx: usize,
+    /// Yanked file paths.
+    pub clipboard: Vec<PathBuf>,
+    /// Whether the last yank was Copy or Cut.
+    pub clipboard_op: ClipboardOp,
+    /// Completed operations (for undo).
+    undo_stack: Vec<FileOp>,
+    /// Undone operations (for redo).
+    redo_stack: Vec<FileOp>,
 }
 
 impl App {
     pub fn new(path: PathBuf, caps: TerminalCaps, config: VeniConfig) -> Self {
+        let left = Pane::new(path.clone());
+        let right = Pane::new(path);
         Self {
             mode: Mode::Normal,
-            cwd: path,
             caps,
             config,
             should_quit: false,
-            entries: Vec::new(),
-            selected: 0,
-            scroll_offset: 0,
+            panes: [left, right],
+            active_pane: 0,
             pending_key: None,
             visual_anchor: None,
             selection: HashSet::new(),
@@ -94,60 +114,49 @@ impl App {
             search_query: String::new(),
             search_matches: Vec::new(),
             search_match_idx: 0,
+            clipboard: Vec::new(),
+            clipboard_op: ClipboardOp::Copy,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
-    /// Read the current working directory and populate `entries`.
-    ///
-    /// Sort order: directories first, then files; alphabetical within each
-    /// group (case-insensitive).  Unreadable entries are silently skipped.
-    /// Dotfiles are included only when `config.show_hidden` is true.
+    /// Read both panes' directories from disk.
     pub fn load_dir(&mut self) -> Result<()> {
-        let read_dir = std::fs::read_dir(&self.cwd).map_err(|source| VeniError::ReadDir {
-            path: self.cwd.clone(),
-            source,
-        })?;
-
-        let mut entries: Vec<DirEntry> = Vec::new();
-        for entry_result in read_dir {
-            let entry = match entry_result {
-                Ok(e) => e,
-                Err(_) => continue, // skip unreadable entries gracefully
-            };
-
-            let name = entry.file_name().to_string_lossy().into_owned();
-
-            // Respect show_hidden setting.
-            if !self.config.show_hidden && name.starts_with('.') {
-                continue;
-            }
-
-            let meta = entry.metadata().ok();
-            let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            let modified = meta.and_then(|m| m.modified().ok());
-
-            entries.push(DirEntry {
-                name,
-                path: entry.path(),
-                is_dir,
-                size,
-                modified,
-            });
-        }
-
-        // Sort: directories first, then files; alphabetical within each group.
-        entries.sort_by(|a, b| {
-            b.is_dir
-                .cmp(&a.is_dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
-
-        self.entries = entries;
-        // Reset cursor when changing directory.
-        self.selected = 0;
-        self.scroll_offset = 0;
+        let show_hidden = self.config.show_hidden;
+        self.panes[0].load_dir(show_hidden)?;
+        self.panes[1].load_dir(show_hidden)?;
         Ok(())
+    }
+
+    /// Immutable reference to the currently focused pane.
+    pub fn active(&self) -> &Pane {
+        &self.panes[self.active_pane]
+    }
+
+    /// Mutable reference to the currently focused pane.
+    pub fn active_mut(&mut self) -> &mut Pane {
+        &mut self.panes[self.active_pane]
+    }
+
+    // ------------------------------------------------------------------
+    // Convenience accessors that proxy to the active pane so that
+    // existing code (especially ui.rs) still compiles with minimal changes.
+    // ------------------------------------------------------------------
+
+    /// CWD of the active pane.
+    pub fn cwd(&self) -> &PathBuf {
+        &self.active().cwd
+    }
+
+    /// Entries of the active pane.
+    pub fn entries(&self) -> &[DirEntry] {
+        &self.active().entries
+    }
+
+    /// Selected index of the active pane.
+    pub fn selected(&self) -> usize {
+        self.active().selected
     }
 
     /// Dispatch a key event to the active mode handler.
@@ -177,7 +186,19 @@ impl App {
     // ------------------------------------------------------------------
 
     fn handle_key_normal(&mut self, key: KeyEvent) {
-        // Arrow keys handled directly without going through char resolver.
+        // Tab switches the active pane.
+        if key.code == KeyCode::Tab {
+            self.switch_pane();
+            return;
+        }
+
+        // Ctrl-r = redo.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
+            self.do_redo();
+            return;
+        }
+
+        // Arrow keys handled directly without going through the char resolver.
         match key.code {
             KeyCode::Down => {
                 self.pending_key = None;
@@ -219,14 +240,16 @@ impl App {
             KeyAction::GoBottom => self.go_bottom(),
             KeyAction::Quit => self.should_quit = true,
             KeyAction::EnterVisual => {
-                self.visual_anchor = Some(self.selected);
+                let sel = self.active().selected;
+                self.visual_anchor = Some(sel);
                 self.mode = Mode::Visual;
             }
             KeyAction::ToggleVisualLine => {
-                if self.selection.contains(&self.selected) {
-                    self.selection.remove(&self.selected);
+                let sel = self.active().selected;
+                if self.selection.contains(&sel) {
+                    self.selection.remove(&sel);
                 } else {
-                    self.selection.insert(self.selected);
+                    self.selection.insert(sel);
                 }
             }
             KeyAction::EnterCommand => {
@@ -241,13 +264,11 @@ impl App {
             }
             KeyAction::SearchNext => self.search_next(),
             KeyAction::SearchPrev => self.search_prev(),
-            // Yank, Delete, Paste, Undo, Rename: stubs for future tasks.
-            KeyAction::Yank
-            | KeyAction::Delete
-            | KeyAction::Paste
-            | KeyAction::Undo
-            | KeyAction::Rename
-            | KeyAction::ToggleHidden => {}
+            KeyAction::Yank => self.yank_current(ClipboardOp::Copy),
+            KeyAction::Delete => self.yank_current(ClipboardOp::Cut),
+            KeyAction::Paste => self.do_paste(),
+            KeyAction::Undo => self.do_undo(),
+            KeyAction::Rename | KeyAction::ToggleHidden => {}
         }
     }
 
@@ -263,12 +284,23 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => self.move_down(),
             KeyCode::Char('k') | KeyCode::Up => self.move_up(),
+            KeyCode::Char('y') => {
+                self.yank_visual(ClipboardOp::Copy);
+                self.mode = Mode::Normal;
+                self.visual_anchor = None;
+            }
+            KeyCode::Char('d') => {
+                self.yank_visual(ClipboardOp::Cut);
+                self.mode = Mode::Normal;
+                self.visual_anchor = None;
+            }
             KeyCode::Char('V') => {
                 // Toggle current entry in explicit selection set and exit visual.
-                if self.selection.contains(&self.selected) {
-                    self.selection.remove(&self.selected);
+                let sel = self.active().selected;
+                if self.selection.contains(&sel) {
+                    self.selection.remove(&sel);
                 } else {
-                    self.selection.insert(self.selected);
+                    self.selection.insert(sel);
                 }
                 self.mode = Mode::Normal;
                 self.visual_anchor = None;
@@ -282,8 +314,9 @@ impl App {
     pub fn visual_range(&self) -> std::ops::RangeInclusive<usize> {
         match self.visual_anchor {
             Some(anchor) => {
-                let lo = anchor.min(self.selected);
-                let hi = anchor.max(self.selected);
+                let cur = self.active().selected;
+                let lo = anchor.min(cur);
+                let hi = anchor.max(cur);
                 lo..=hi
             }
             None => 0..=0, // degenerate; callers should check mode
@@ -332,11 +365,12 @@ impl App {
                 let new_path = if path_str.starts_with('/') {
                     PathBuf::from(path_str)
                 } else {
-                    self.cwd.join(path_str)
+                    self.active().cwd.join(path_str)
                 };
                 if new_path.is_dir() {
-                    self.cwd = new_path;
-                    let _ = self.load_dir();
+                    let show_hidden = self.config.show_hidden;
+                    self.active_mut().cwd = new_path;
+                    let _ = self.active_mut().load_dir(show_hidden);
                 }
             }
             _ => {} // unknown command — silently ignore
@@ -358,7 +392,7 @@ impl App {
             KeyCode::Enter => {
                 // Confirm search: move to first match if any, return to Normal.
                 if !self.search_matches.is_empty() {
-                    self.selected = self.search_matches[0];
+                    self.active_mut().selected = self.search_matches[0];
                     self.search_match_idx = 0;
                 }
                 self.mode = Mode::Normal;
@@ -372,7 +406,7 @@ impl App {
                 self.update_search_matches();
                 // Jump cursor to first match immediately.
                 if !self.search_matches.is_empty() {
-                    self.selected = self.search_matches[0];
+                    self.active_mut().selected = self.search_matches[0];
                     self.search_match_idx = 0;
                 }
             }
@@ -380,7 +414,7 @@ impl App {
         }
     }
 
-    fn update_search_matches(&mut self) {
+    pub fn update_search_matches(&mut self) {
         if self.search_query.is_empty() {
             self.search_matches.clear();
             self.search_match_idx = 0;
@@ -388,6 +422,7 @@ impl App {
         }
         let query = self.search_query.to_lowercase();
         self.search_matches = self
+            .active()
             .entries
             .iter()
             .enumerate()
@@ -402,7 +437,7 @@ impl App {
             return;
         }
         self.search_match_idx = (self.search_match_idx + 1) % self.search_matches.len();
-        self.selected = self.search_matches[self.search_match_idx];
+        self.active_mut().selected = self.search_matches[self.search_match_idx];
     }
 
     fn search_prev(&mut self) {
@@ -414,50 +449,175 @@ impl App {
         } else {
             self.search_match_idx -= 1;
         }
-        self.selected = self.search_matches[self.search_match_idx];
+        self.active_mut().selected = self.search_matches[self.search_match_idx];
     }
 
     // ------------------------------------------------------------------
-    // Navigation primitives
+    // Pane switching
+    // ------------------------------------------------------------------
+
+    fn switch_pane(&mut self) {
+        self.active_pane = 1 - self.active_pane;
+        // Clear search / selection state that is per-pane.
+        self.search_query.clear();
+        self.search_matches.clear();
+        self.search_match_idx = 0;
+        self.visual_anchor = None;
+        self.selection.clear();
+        self.pending_key = None;
+        if self.mode == Mode::Visual || self.mode == Mode::Search {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Clipboard
+    // ------------------------------------------------------------------
+
+    fn yank_current(&mut self, op: ClipboardOp) {
+        if let Some(entry) = self.active().current_entry() {
+            self.clipboard = vec![entry.path.clone()];
+            self.clipboard_op = op;
+        }
+        self.redo_stack.clear();
+    }
+
+    fn yank_visual(&mut self, op: ClipboardOp) {
+        let anchor = self.visual_anchor.unwrap_or(self.active().selected);
+        let cur = self.active().selected;
+        let lo = anchor.min(cur);
+        let hi = anchor.max(cur);
+        let paths: Vec<PathBuf> = self.active().entries[lo..=hi]
+            .iter()
+            .map(|e| e.path.clone())
+            .collect();
+        if !paths.is_empty() {
+            self.clipboard = paths;
+            self.clipboard_op = op;
+        }
+        self.redo_stack.clear();
+    }
+
+    // ------------------------------------------------------------------
+    // Paste
+    // ------------------------------------------------------------------
+
+    fn do_paste(&mut self) {
+        if self.clipboard.is_empty() {
+            return;
+        }
+        let dest = self.active().cwd.clone();
+        let op = match self.clipboard_op {
+            ClipboardOp::Copy => FileOp::Copy {
+                sources: self.clipboard.clone(),
+                dest,
+            },
+            ClipboardOp::Cut => {
+                let op = FileOp::Move {
+                    sources: self.clipboard.clone(),
+                    dest,
+                };
+                // Clear clipboard after cut-paste so it cannot be pasted twice.
+                self.clipboard.clear();
+                op
+            }
+        };
+
+        if execute_op(&op).is_ok() {
+            self.push_undo(op);
+            let show_hidden = self.config.show_hidden;
+            let _ = self.panes[self.active_pane].load_dir(show_hidden);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Undo / Redo
+    // ------------------------------------------------------------------
+
+    pub fn push_undo(&mut self, op: FileOp) {
+        if self.undo_stack.len() >= UNDO_STACK_LIMIT {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(op);
+    }
+
+    fn do_undo(&mut self) {
+        if let Some(op) = self.undo_stack.pop() {
+            let inv = inverse_op(&op);
+            if execute_op(&inv).is_ok() {
+                self.redo_stack.push(op);
+                let show_hidden = self.config.show_hidden;
+                let _ = self.panes[0].load_dir(show_hidden);
+                let _ = self.panes[1].load_dir(show_hidden);
+            } else {
+                // Put back if undo failed.
+                self.undo_stack.push(op);
+            }
+        }
+    }
+
+    fn do_redo(&mut self) {
+        if let Some(op) = self.redo_stack.pop() {
+            if execute_op(&op).is_ok() {
+                self.push_undo(op);
+                let show_hidden = self.config.show_hidden;
+                let _ = self.panes[0].load_dir(show_hidden);
+                let _ = self.panes[1].load_dir(show_hidden);
+            } else {
+                self.redo_stack.push(op);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Navigation primitives (proxy to active pane)
     // ------------------------------------------------------------------
 
     fn move_down(&mut self) {
-        if !self.entries.is_empty() && self.selected < self.entries.len() - 1 {
-            self.selected += 1;
+        let pane = &mut self.panes[self.active_pane];
+        if !pane.entries.is_empty() && pane.selected < pane.entries.len() - 1 {
+            pane.selected += 1;
         }
     }
 
     fn move_up(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
+        let pane = &mut self.panes[self.active_pane];
+        if pane.selected > 0 {
+            pane.selected -= 1;
         }
     }
 
     fn go_top(&mut self) {
-        self.selected = 0;
-        self.scroll_offset = 0;
+        let pane = &mut self.panes[self.active_pane];
+        pane.selected = 0;
+        pane.scroll_offset = 0;
     }
 
     fn go_bottom(&mut self) {
-        if !self.entries.is_empty() {
-            self.selected = self.entries.len() - 1;
+        let pane = &mut self.panes[self.active_pane];
+        if !pane.entries.is_empty() {
+            pane.selected = pane.entries.len() - 1;
         }
     }
 
     fn enter_dir(&mut self) {
-        if let Some(entry) = self.entries.get(self.selected) {
+        let show_hidden = self.config.show_hidden;
+        let pane = &mut self.panes[self.active_pane];
+        if let Some(entry) = pane.entries.get(pane.selected) {
             if entry.is_dir {
                 let new_path = entry.path.clone();
-                self.cwd = new_path;
-                let _ = self.load_dir();
+                pane.cwd = new_path;
+                let _ = pane.load_dir(show_hidden);
             }
         }
     }
 
     fn go_parent(&mut self) {
-        if let Some(parent) = self.cwd.parent().map(|p| p.to_path_buf()) {
-            self.cwd = parent;
-            let _ = self.load_dir();
+        let show_hidden = self.config.show_hidden;
+        let pane = &mut self.panes[self.active_pane];
+        if let Some(parent) = pane.cwd.parent().map(|p| p.to_path_buf()) {
+            pane.cwd = parent;
+            let _ = pane.load_dir(show_hidden);
         }
     }
 }
@@ -478,6 +638,14 @@ mod tests {
             TerminalCaps::default(),
             VeniConfig::default(),
         )
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
     // ------------------------------------------------------------------
@@ -504,7 +672,9 @@ mod tests {
         let app = make_app(&tmp);
         assert_eq!(app.mode, Mode::Normal);
         assert!(!app.should_quit);
-        assert!(app.entries.is_empty());
+        assert!(app.panes[0].entries.is_empty());
+        assert!(app.panes[1].entries.is_empty());
+        assert_eq!(app.active_pane, 0);
     }
 
     // ------------------------------------------------------------------
@@ -517,8 +687,8 @@ mod tests {
         fs::write(tmp.path().join("file.txt"), b"hello").unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        assert_eq!(app.entries.len(), 1);
-        assert_eq!(app.entries[0].name, "file.txt");
+        assert_eq!(app.panes[0].entries.len(), 1);
+        assert_eq!(app.panes[0].entries[0].name, "file.txt");
     }
 
     #[test]
@@ -528,8 +698,8 @@ mod tests {
         fs::create_dir(tmp.path().join("bbb_dir")).unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        assert!(app.entries[0].is_dir, "directory must come first");
-        assert!(!app.entries[1].is_dir);
+        assert!(app.panes[0].entries[0].is_dir, "directory must come first");
+        assert!(!app.panes[0].entries[1].is_dir);
     }
 
     #[test]
@@ -539,8 +709,8 @@ mod tests {
         fs::write(tmp.path().join("apple.txt"), b"").unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        assert_eq!(app.entries[0].name, "apple.txt");
-        assert_eq!(app.entries[1].name, "zebra.txt");
+        assert_eq!(app.panes[0].entries[0].name, "apple.txt");
+        assert_eq!(app.panes[0].entries[1].name, "zebra.txt");
     }
 
     #[test]
@@ -550,8 +720,8 @@ mod tests {
         fs::write(tmp.path().join("visible.txt"), b"").unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        assert_eq!(app.entries.len(), 1);
-        assert_eq!(app.entries[0].name, "visible.txt");
+        assert_eq!(app.panes[0].entries.len(), 1);
+        assert_eq!(app.panes[0].entries[0].name, "visible.txt");
     }
 
     #[test]
@@ -563,7 +733,7 @@ mod tests {
         cfg.show_hidden = true;
         let mut app = App::new(tmp.path().to_path_buf(), TerminalCaps::default(), cfg);
         app.load_dir().unwrap();
-        assert_eq!(app.entries.len(), 2);
+        assert_eq!(app.panes[0].entries.len(), 2);
     }
 
     #[test]
@@ -573,9 +743,9 @@ mod tests {
         fs::write(tmp.path().join("b.txt"), b"").unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        app.selected = 1;
+        app.panes[0].selected = 1;
         app.load_dir().unwrap();
-        assert_eq!(app.selected, 0);
+        assert_eq!(app.panes[0].selected, 0);
     }
 
     #[test]
@@ -583,20 +753,54 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        assert!(app.entries.is_empty());
+        assert!(app.panes[0].entries.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // Pane switching
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn tab_switches_active_pane() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app(&tmp);
+        assert_eq!(app.active_pane, 0);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.active_pane, 1);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.active_pane, 0);
+    }
+
+    #[test]
+    fn panes_have_independent_navigation() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.txt"), b"").unwrap();
+        fs::write(tmp.path().join("b.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+
+        // Move down in pane 0.
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.panes[0].selected, 1);
+        // Pane 1 untouched.
+        assert_eq!(app.panes[1].selected, 0);
+
+        // Switch to pane 1.
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.active_pane, 1);
+        assert_eq!(app.panes[1].selected, 0);
+    }
+
+    #[test]
+    fn active_returns_focused_pane() {
+        let tmp = TempDir::new().unwrap();
+        let app = make_app(&tmp);
+        assert_eq!(app.active().cwd, app.panes[0].cwd);
     }
 
     // ------------------------------------------------------------------
     // handle_key / navigation tests
     // ------------------------------------------------------------------
-
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    fn ctrl_key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::CONTROL)
-    }
 
     #[test]
     fn q_sets_should_quit() {
@@ -622,7 +826,7 @@ mod tests {
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
         app.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(app.selected, 1);
+        assert_eq!(app.panes[0].selected, 1);
     }
 
     #[test]
@@ -632,9 +836,9 @@ mod tests {
         fs::write(tmp.path().join("b.txt"), b"").unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        app.selected = 1;
+        app.panes[0].selected = 1;
         app.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(app.selected, 0);
+        assert_eq!(app.panes[0].selected, 0);
     }
 
     #[test]
@@ -644,7 +848,7 @@ mod tests {
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
         app.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(app.selected, 0); // only one entry; stays at 0
+        assert_eq!(app.panes[0].selected, 0);
     }
 
     #[test]
@@ -654,7 +858,7 @@ mod tests {
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
         app.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(app.selected, 0);
+        assert_eq!(app.panes[0].selected, 0);
     }
 
     #[test]
@@ -666,7 +870,7 @@ mod tests {
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
         app.handle_key(key(KeyCode::Char('G')));
-        assert_eq!(app.selected, 2);
+        assert_eq!(app.panes[0].selected, 2);
     }
 
     #[test]
@@ -676,10 +880,10 @@ mod tests {
         fs::write(tmp.path().join("b.txt"), b"").unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        app.selected = 1;
+        app.panes[0].selected = 1;
         app.handle_key(key(KeyCode::Char('g')));
         app.handle_key(key(KeyCode::Char('g')));
-        assert_eq!(app.selected, 0);
+        assert_eq!(app.panes[0].selected, 0);
     }
 
     #[test]
@@ -689,10 +893,9 @@ mod tests {
         fs::write(tmp.path().join("b.txt"), b"").unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        app.selected = 1;
+        app.panes[0].selected = 1;
         app.handle_key(key(KeyCode::Char('g')));
-        // Only one `g` pressed — cursor must not change yet.
-        assert_eq!(app.selected, 1);
+        assert_eq!(app.panes[0].selected, 1);
         assert_eq!(app.pending_key, Some('g'));
     }
 
@@ -703,10 +906,10 @@ mod tests {
         fs::create_dir(&subdir).unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        assert_eq!(app.entries[0].name, "subdir");
-        let expected = app.entries[0].path.clone();
+        assert_eq!(app.panes[0].entries[0].name, "subdir");
+        let expected = app.panes[0].entries[0].path.clone();
         app.handle_key(key(KeyCode::Char('l')));
-        assert_eq!(app.cwd, expected);
+        assert_eq!(app.panes[0].cwd, expected);
     }
 
     #[test]
@@ -723,7 +926,10 @@ mod tests {
         let parent = tmp.path().to_path_buf();
         app.handle_key(key(KeyCode::Char('h')));
         assert_eq!(
-            app.cwd.canonicalize().unwrap_or(app.cwd.clone()),
+            app.panes[0]
+                .cwd
+                .canonicalize()
+                .unwrap_or(app.panes[0].cwd.clone()),
             parent.canonicalize().unwrap_or(parent)
         );
     }
@@ -736,9 +942,9 @@ mod tests {
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
         app.handle_key(key(KeyCode::Down));
-        assert_eq!(app.selected, 1);
+        assert_eq!(app.panes[0].selected, 1);
         app.handle_key(key(KeyCode::Up));
-        assert_eq!(app.selected, 0);
+        assert_eq!(app.panes[0].selected, 0);
     }
 
     #[test]
@@ -757,11 +963,9 @@ mod tests {
         fs::write(tmp.path().join("b.txt"), b"").unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        app.selected = 1;
+        app.panes[0].selected = 1;
         app.handle_key(key(KeyCode::Char('g')));
         assert_eq!(app.pending_key, Some('g'));
-        // Press 'j' after 'g' — pending_g clears, 'j' fires (MoveDown).
-        // We're at position 1 (last), so moves nowhere but pending clears.
         app.handle_key(key(KeyCode::Char('j')));
         assert_eq!(app.pending_key, None);
     }
@@ -801,7 +1005,7 @@ mod tests {
         app.mode = Mode::Visual;
         app.visual_anchor = Some(0);
         app.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(app.selected, 1);
+        assert_eq!(app.panes[0].selected, 1);
         let range = app.visual_range();
         assert_eq!(*range.start(), 0);
         assert_eq!(*range.end(), 1);
@@ -815,7 +1019,7 @@ mod tests {
         fs::write(tmp.path().join("c.txt"), b"").unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        app.selected = 2;
+        app.panes[0].selected = 2;
         app.mode = Mode::Visual;
         app.visual_anchor = Some(2);
         app.handle_key(key(KeyCode::Char('k')));
@@ -897,12 +1101,12 @@ mod tests {
         fs::write(tmp.path().join(".hidden"), b"").unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        assert_eq!(app.entries.len(), 0);
+        assert_eq!(app.panes[0].entries.len(), 0);
         app.mode = Mode::Command;
         app.command_input = "set hidden".to_string();
         app.handle_key(key(KeyCode::Enter));
         assert!(app.config.show_hidden);
-        assert_eq!(app.entries.len(), 1);
+        assert_eq!(app.panes[0].entries.len(), 1);
     }
 
     #[test]
@@ -914,12 +1118,12 @@ mod tests {
         cfg.show_hidden = true;
         let mut app = App::new(tmp.path().to_path_buf(), TerminalCaps::default(), cfg);
         app.load_dir().unwrap();
-        assert_eq!(app.entries.len(), 2);
+        assert_eq!(app.panes[0].entries.len(), 2);
         app.mode = Mode::Command;
         app.command_input = "set nohidden".to_string();
         app.handle_key(key(KeyCode::Enter));
         assert!(!app.config.show_hidden);
-        assert_eq!(app.entries.len(), 1);
+        assert_eq!(app.panes[0].entries.len(), 1);
     }
 
     #[test]
@@ -933,7 +1137,7 @@ mod tests {
         let cd_cmd = format!("cd {}", subdir.to_string_lossy());
         app.command_input = cd_cmd;
         app.handle_key(key(KeyCode::Enter));
-        assert_eq!(app.cwd, subdir);
+        assert_eq!(app.panes[0].cwd, subdir);
     }
 
     #[test]
@@ -971,10 +1175,9 @@ mod tests {
         app.mode = Mode::Search;
         app.handle_key(key(KeyCode::Char('a')));
         app.handle_key(key(KeyCode::Char('l')));
-        // "al" matches alpha.txt (idx 0) and alphabet.txt (idx 1) — not beta.
+        // "al" matches alpha.txt and alphabet.txt — not beta.
         assert_eq!(app.search_matches.len(), 2);
-        // Cursor should jump to first match.
-        assert_eq!(app.selected, app.search_matches[0]);
+        assert_eq!(app.panes[0].selected, app.search_matches[0]);
     }
 
     #[test]
@@ -988,7 +1191,7 @@ mod tests {
         app.update_search_matches();
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Normal);
-        assert_eq!(app.selected, 0);
+        assert_eq!(app.panes[0].selected, 0);
     }
 
     #[test]
@@ -1013,16 +1216,13 @@ mod tests {
         fs::write(tmp.path().join("gamma_a.txt"), b"").unwrap();
         let mut app = make_app(&tmp);
         app.load_dir().unwrap();
-        // Set up a search with matches at indices 0 and 2.
         app.search_query = "a".to_string();
         app.update_search_matches();
-        // Confirm all three contain 'a'.
         assert_eq!(app.search_matches.len(), 3);
-        app.selected = app.search_matches[0];
+        app.panes[0].selected = app.search_matches[0];
         app.search_match_idx = 0;
-        // 'n' moves to next.
         app.handle_key(key(KeyCode::Char('n')));
-        assert_eq!(app.selected, app.search_matches[1]);
+        assert_eq!(app.panes[0].selected, app.search_matches[1]);
     }
 
     #[test]
@@ -1035,10 +1235,10 @@ mod tests {
         app.load_dir().unwrap();
         app.search_query = "a".to_string();
         app.update_search_matches();
-        app.selected = app.search_matches[1];
+        app.panes[0].selected = app.search_matches[1];
         app.search_match_idx = 1;
         app.handle_key(key(KeyCode::Char('N')));
-        assert_eq!(app.selected, app.search_matches[0]);
+        assert_eq!(app.panes[0].selected, app.search_matches[0]);
     }
 
     #[test]
@@ -1050,11 +1250,9 @@ mod tests {
         app.load_dir().unwrap();
         app.mode = Mode::Search;
         app.handle_key(key(KeyCode::Char('a')));
-        let matches_after_a = app.search_matches.len();
         app.handle_key(key(KeyCode::Backspace));
         assert!(app.search_query.is_empty());
         assert!(app.search_matches.is_empty());
-        let _ = matches_after_a; // just ensuring count changed
     }
 
     #[test]
@@ -1078,7 +1276,7 @@ mod tests {
         app.search_query = "a".to_string();
         app.update_search_matches();
         app.search_match_idx = app.search_matches.len() - 1;
-        app.selected = *app.search_matches.last().unwrap();
+        app.panes[0].selected = *app.search_matches.last().unwrap();
         app.handle_key(key(KeyCode::Char('n')));
         assert_eq!(app.search_match_idx, 0);
     }
@@ -1093,8 +1291,170 @@ mod tests {
         app.search_query = "a".to_string();
         app.update_search_matches();
         app.search_match_idx = 0;
-        app.selected = app.search_matches[0];
+        app.panes[0].selected = app.search_matches[0];
         app.handle_key(key(KeyCode::Char('N')));
         assert_eq!(app.search_match_idx, app.search_matches.len() - 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Clipboard — yank / paste
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn yy_yanks_current_file_as_copy() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("file.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        // yy = press 'y' twice.
+        app.handle_key(key(KeyCode::Char('y')));
+        app.handle_key(key(KeyCode::Char('y')));
+        assert_eq!(app.clipboard.len(), 1);
+        assert_eq!(app.clipboard[0].file_name().unwrap(), "file.txt");
+        assert_eq!(app.clipboard_op, ClipboardOp::Copy);
+    }
+
+    #[test]
+    fn dd_yanks_current_file_as_cut() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("file.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        // dd = press 'd' twice.
+        app.handle_key(key(KeyCode::Char('d')));
+        app.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(app.clipboard.len(), 1);
+        assert_eq!(app.clipboard_op, ClipboardOp::Cut);
+    }
+
+    #[test]
+    fn visual_yank_captures_range() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.txt"), b"").unwrap();
+        fs::write(tmp.path().join("b.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+
+        // Enter visual at entry 0.
+        app.handle_key(key(KeyCode::Char('v')));
+        assert_eq!(app.mode, Mode::Visual);
+        // Move down to entry 1.
+        app.handle_key(key(KeyCode::Char('j')));
+        // Yank.
+        app.handle_key(key(KeyCode::Char('y')));
+
+        assert_eq!(app.clipboard.len(), 2);
+        assert_eq!(app.clipboard_op, ClipboardOp::Copy);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    // ------------------------------------------------------------------
+    // Cross-pane paste (task 20)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn cross_pane_paste_copies_to_active_pane_cwd() {
+        let src_dir = TempDir::new().unwrap();
+        let dst_dir = TempDir::new().unwrap();
+        fs::write(src_dir.path().join("cross.txt"), b"data").unwrap();
+
+        let mut app = App::new(
+            src_dir.path().to_path_buf(),
+            TerminalCaps::default(),
+            VeniConfig::default(),
+        );
+        app.panes[1].cwd = dst_dir.path().to_path_buf();
+        app.panes[0].load_dir(false).unwrap();
+        app.panes[1].load_dir(false).unwrap();
+
+        // Yank in pane 0.
+        app.handle_key(key(KeyCode::Char('y')));
+        app.handle_key(key(KeyCode::Char('y')));
+        assert_eq!(app.clipboard.len(), 1);
+
+        // Switch to pane 1 and paste.
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Char('p')));
+
+        assert!(dst_dir.path().join("cross.txt").exists());
+    }
+
+    // ------------------------------------------------------------------
+    // Undo / Redo
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn undo_reverses_copy_paste() {
+        let src_dir = TempDir::new().unwrap();
+        let dst_dir = TempDir::new().unwrap();
+        fs::write(src_dir.path().join("undo_me.txt"), b"").unwrap();
+
+        let mut app = App::new(
+            src_dir.path().to_path_buf(),
+            TerminalCaps::default(),
+            VeniConfig::default(),
+        );
+        app.panes[1].cwd = dst_dir.path().to_path_buf();
+        app.panes[0].load_dir(false).unwrap();
+        app.panes[1].load_dir(false).unwrap();
+
+        // Yank in pane 0, switch to pane 1, paste.
+        app.handle_key(key(KeyCode::Char('y')));
+        app.handle_key(key(KeyCode::Char('y')));
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Char('p')));
+        assert!(dst_dir.path().join("undo_me.txt").exists());
+
+        // Undo — should delete the copy.
+        app.handle_key(key(KeyCode::Char('u')));
+        assert!(!dst_dir.path().join("undo_me.txt").exists());
+    }
+
+    #[test]
+    fn redo_after_undo_restores_operation() {
+        let src_dir = TempDir::new().unwrap();
+        let dst_dir = TempDir::new().unwrap();
+        fs::write(src_dir.path().join("redo_me.txt"), b"").unwrap();
+
+        let mut app = App::new(
+            src_dir.path().to_path_buf(),
+            TerminalCaps::default(),
+            VeniConfig::default(),
+        );
+        app.panes[1].cwd = dst_dir.path().to_path_buf();
+        app.panes[0].load_dir(false).unwrap();
+        app.panes[1].load_dir(false).unwrap();
+
+        // Yank, switch, paste.
+        app.handle_key(key(KeyCode::Char('y')));
+        app.handle_key(key(KeyCode::Char('y')));
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Char('p')));
+        assert!(dst_dir.path().join("redo_me.txt").exists());
+
+        // Undo.
+        app.handle_key(key(KeyCode::Char('u')));
+        assert!(!dst_dir.path().join("redo_me.txt").exists());
+
+        // Redo.
+        app.handle_key(ctrl_key(KeyCode::Char('r')));
+        assert!(dst_dir.path().join("redo_me.txt").exists());
+    }
+
+    #[test]
+    fn undo_stack_bounded_at_limit() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("f.txt");
+        fs::write(&src, b"").unwrap();
+
+        let mut app = make_app(&tmp);
+
+        for _ in 0..=UNDO_STACK_LIMIT {
+            app.push_undo(FileOp::Copy {
+                sources: vec![src.clone()],
+                dest: tmp.path().to_path_buf(),
+            });
+        }
+        assert_eq!(app.undo_stack.len(), UNDO_STACK_LIMIT);
     }
 }
