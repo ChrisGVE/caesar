@@ -16,7 +16,7 @@ pub struct Config {
 
     /// User-defined themes that extend or override built-in themes.
     #[serde(default)]
-    pub custom_themes: Vec<crate::theme::palette::Theme>,
+    pub custom_themes: Vec<crate::theme::Theme>,
 
     /// Per-tool argument overrides, keyed by tool name.
     #[serde(default)]

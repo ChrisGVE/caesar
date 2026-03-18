@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+pub use caesar_common::error::ConfigError;
+
 #[derive(Debug, Error)]
 pub enum VidiError {
     #[error("file not found: {0}")]
@@ -31,19 +33,20 @@ pub enum VidiError {
     Theme(String),
 }
 
-#[derive(Debug, Error)]
-pub enum ConfigError {
-    #[error("failed to read config file {path}: {source}")]
-    Read {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-
-    #[error("failed to parse config file {path}: {source}")]
-    Parse {
-        path: PathBuf,
-        source: toml::de::Error,
-    },
+impl From<caesar_common::error::CommonError> for VidiError {
+    fn from(e: caesar_common::error::CommonError) -> Self {
+        use caesar_common::error::CommonError;
+        match e {
+            CommonError::FileNotFound(p) => VidiError::FileNotFound(p),
+            CommonError::FileUnreadable { path, source } => {
+                VidiError::FileUnreadable { path, source }
+            }
+            CommonError::Config(c) => VidiError::Config(c),
+            CommonError::Io(io) => VidiError::Io(io),
+            CommonError::Theme(msg) => VidiError::Theme(msg),
+            CommonError::Detection(msg) => VidiError::Theme(msg),
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, VidiError>;
@@ -76,5 +79,21 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("bat"));
         assert!(msg.contains('1'));
+    }
+
+    #[test]
+    fn from_common_error_file_not_found() {
+        use caesar_common::error::CommonError;
+        let common = CommonError::FileNotFound(PathBuf::from("/tmp/x"));
+        let vidi: VidiError = common.into();
+        assert!(vidi.to_string().contains("/tmp/x"));
+    }
+
+    #[test]
+    fn from_common_error_theme() {
+        use caesar_common::error::CommonError;
+        let common = CommonError::Theme("bad theme".to_string());
+        let vidi: VidiError = common.into();
+        assert!(vidi.to_string().contains("bad theme"));
     }
 }
