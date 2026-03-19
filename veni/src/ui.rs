@@ -1,4 +1,4 @@
-use crate::app::{App, DirEntry, Mode};
+use crate::app::{App, DirEntry, LayoutMode, Mode};
 use crate::pane::Pane;
 use caesar_common::terminal::MultiplexerKind;
 use ratatui::{
@@ -32,8 +32,29 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 // ---------------------------------------------------------------------------
 
 fn draw_panes(f: &mut Frame, app: &mut App, area: Rect) {
-    // Calculate how many panes fit in the terminal width.
-    // Each pane gets at least MIN_PANE_WIDTH columns.
+    match app.layout_mode {
+        LayoutMode::Single => {
+            // Full-width single pane — only the active pane.
+            render_pane(f, app, app.active_pane, area);
+        }
+        LayoutMode::DualBalanced => {
+            // Niri-style: show as many panes as fit.
+            draw_panes_niri(f, app, area);
+        }
+        LayoutMode::SinglePreview => {
+            // Left: active directory pane. Right: preview pane.
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(area);
+            render_pane(f, app, app.active_pane, chunks[0]);
+            draw_preview_pane(f, app, chunks[1]);
+        }
+    }
+}
+
+/// Niri-style multi-pane layout (used for DualBalanced and general niri scrolling).
+fn draw_panes_niri(f: &mut Frame, app: &mut App, area: Rect) {
     const MIN_PANE_WIDTH: u16 = 20;
     let total_panes = app.panes.len();
     let max_visible = if area.width >= MIN_PANE_WIDTH {
@@ -44,7 +65,6 @@ fn draw_panes(f: &mut Frame, app: &mut App, area: Rect) {
     let visible_count = max_visible.min(total_panes.saturating_sub(app.viewport_start));
     let visible_count = visible_count.max(1);
 
-    // Build equal-width constraints for each visible pane.
     let constraints: Vec<Constraint> = (0..visible_count)
         .map(|_| Constraint::Ratio(1, visible_count as u32))
         .collect();
@@ -60,6 +80,30 @@ fn draw_panes(f: &mut Frame, app: &mut App, area: Rect) {
             render_pane(f, app, pane_idx, *area);
         }
     }
+}
+
+/// Preview pane — shows a placeholder until vidi library API is integrated.
+fn draw_preview_pane(f: &mut Frame, app: &App, area: Rect) {
+    let preview_text = if let Some(entry) = app.active().current_entry() {
+        if entry.is_dir {
+            format!("[directory: {}]", entry.name)
+        } else {
+            format!("[preview: {}]", entry.name)
+        }
+    } else {
+        "[no selection]".to_string()
+    };
+
+    let block = Block::default()
+        .title(" Preview ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    let paragraph = Paragraph::new(preview_text)
+        .block(block)
+        .style(Style::default().fg(Color::DarkGray));
+
+    f.render_widget(paragraph, area);
 }
 
 /// Render a single pane at `pane_idx` into the given `area`.
@@ -366,7 +410,8 @@ fn draw_normal_status(f: &mut Frame, app: &App, area: Rect) {
         MultiplexerKind::Cmux => " [screen]".to_string(),
         MultiplexerKind::None => String::new(),
     };
-    let right_str = format!("{}{}", mux_suffix, mode_str);
+    let layout_str = format!(" [{}]", app.layout_mode);
+    let right_str = format!("{}{}{}", layout_str, mux_suffix, mode_str);
 
     let inner_width = area.width as usize;
     let right_len = right_str.len();
@@ -477,7 +522,8 @@ fn help_content() -> Vec<Line<'static>> {
         key("Esc (visual)", "Exit Visual mode"),
         blank(),
         section("Search"),
-        key("/", "Start forward search"),
+        key("/", "Search forward"),
+        key("?", "Search backward"),
         key("n", "Next search match"),
         key("N", "Previous search match"),
         key("Esc (search)", "Cancel search"),
@@ -492,11 +538,12 @@ fn help_content() -> Vec<Line<'static>> {
         blank(),
         section("Toggles"),
         key("gh", "Toggle hidden files"),
-        key("?", "Show this help"),
         blank(),
         section("General"),
         key("q", "Quit"),
         key("Ctrl-c", "Force quit"),
+        key("F1", "Show this help"),
+        key(":help", "Show this help"),
     ]
 }
 

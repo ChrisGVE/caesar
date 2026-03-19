@@ -25,6 +25,10 @@ pub enum KeyAction {
     ScrollLeft,
     /// Shift-L: scroll viewport right (show next pane).
     ScrollRight,
+    /// Backward search (?pattern).
+    SearchBackward,
+    /// Cycle layout mode (single → dual → preview).
+    ToggleLayout,
     /// Show help overlay.
     ShowHelp,
 }
@@ -45,6 +49,7 @@ pub fn resolve(ch: char, pending: &mut Option<char>) -> Option<KeyAction> {
             match (first, ch) {
                 ('g', 'g') => Some(KeyAction::GoTop),
                 ('g', 'h') => Some(KeyAction::ToggleHidden),
+                ('g', 'l') => Some(KeyAction::ToggleLayout),
                 ('d', 'd') => Some(KeyAction::Delete),
                 ('y', 'y') => Some(KeyAction::Yank),
                 // `ciw` and `cw` both map to rename in a file manager context.
@@ -76,12 +81,12 @@ pub fn resolve(ch: char, pending: &mut Option<char>) -> Option<KeyAction> {
             'V' => Some(KeyAction::ToggleVisualLine),
             ':' => Some(KeyAction::EnterCommand),
             '/' => Some(KeyAction::SearchForward),
+            '?' => Some(KeyAction::SearchBackward),
             'n' => Some(KeyAction::SearchNext),
             'N' => Some(KeyAction::SearchPrev),
             '.' => Some(KeyAction::DotRepeat),
             'H' => Some(KeyAction::ScrollLeft),
             'L' => Some(KeyAction::ScrollRight),
-            '?' => Some(KeyAction::ShowHelp),
             // First key of a potential two-key sequence.
             'g' | 'd' | 'y' | 'c' => {
                 *pending = Some(ch);

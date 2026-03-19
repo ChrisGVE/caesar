@@ -48,6 +48,44 @@ impl std::fmt::Display for Mode {
     }
 }
 
+/// Layout mode for the main content area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutMode {
+    /// Single directory pane, full width.
+    Single,
+    /// Two directory panes, balanced 50/50.
+    DualBalanced,
+    /// Single directory pane on the left, preview pane on the right.
+    SinglePreview,
+}
+
+impl Default for LayoutMode {
+    fn default() -> Self {
+        Self::SinglePreview
+    }
+}
+
+impl LayoutMode {
+    /// Cycle to the next layout mode.
+    pub fn next(self) -> Self {
+        match self {
+            Self::SinglePreview => Self::Single,
+            Self::Single => Self::DualBalanced,
+            Self::DualBalanced => Self::SinglePreview,
+        }
+    }
+}
+
+impl std::fmt::Display for LayoutMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Single => write!(f, "single"),
+            Self::DualBalanced => write!(f, "dual"),
+            Self::SinglePreview => write!(f, "preview"),
+        }
+    }
+}
+
 /// Whether a yank is Copy or Cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardOp {
@@ -113,6 +151,8 @@ pub struct App {
     pub last_file_action: Option<KeyAction>,
     /// Scroll offset for the help overlay.
     pub help_scroll_offset: usize,
+    /// Current layout mode.
+    pub layout_mode: LayoutMode,
 }
 
 impl App {
@@ -144,6 +184,7 @@ impl App {
             rename_origin: None,
             last_file_action: None,
             help_scroll_offset: 0,
+            layout_mode: LayoutMode::default(),
         }
     }
 
@@ -251,6 +292,13 @@ impl App {
             return;
         }
 
+        // F1 opens help (like neovim).
+        if key.code == KeyCode::F(1) {
+            self.help_scroll_offset = 0;
+            self.mode = Mode::Help;
+            return;
+        }
+
         // Arrow keys handled directly without going through the char resolver.
         match key.code {
             KeyCode::Down => {
@@ -309,7 +357,7 @@ impl App {
                 self.command_input.clear();
                 self.mode = Mode::Command;
             }
-            KeyAction::SearchForward => {
+            KeyAction::SearchForward | KeyAction::SearchBackward => {
                 self.search_query.clear();
                 self.search_matches.clear();
                 self.search_match_idx = 0;
@@ -335,6 +383,18 @@ impl App {
             KeyAction::DotRepeat => self.dot_repeat(),
             KeyAction::ScrollLeft => self.scroll_viewport_left(),
             KeyAction::ScrollRight => self.scroll_viewport_right(),
+            KeyAction::ToggleLayout => {
+                self.layout_mode = self.layout_mode.next();
+                // In single mode, only one pane is relevant. In dual, ensure
+                // we have at least 2 panes.
+                if self.layout_mode == LayoutMode::DualBalanced && self.panes.len() < 2 {
+                    let new_pane = Pane::new(self.active().cwd.clone());
+                    self.panes.push(new_pane);
+                    let show_hidden = self.config.show_hidden;
+                    let last = self.panes.len() - 1;
+                    let _ = self.panes[last].load_dir(show_hidden);
+                }
+            }
             KeyAction::ShowHelp => self.mode = Mode::Help,
         }
     }
